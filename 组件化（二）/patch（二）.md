@@ -280,4 +280,110 @@ export function initLifecycle (vm: Component) {
 
 在`vm._update`的过程中，把当前的`vm`赋值给`activeInstance`，同时通过`prevActiveInstance = activeInstance`用`prevActiveInstance`保留上一次的`activeInstance`。实际上`prevActiveInstance`和当前的`vm`是父子关系，当一个`vm`实例完成它所有的子树的patch或update过程后，`activeInstance`会回到父实例。这样就保证了`createComponentInstanceForVnode`整个深度遍历过程中，我们在实例化子组件的时候能传入当前子组件的父Vue实例，并在`_init`的过程中，通过`vm.$parent`把这个父子关系保留。
 
-这就又回到`_update`，最后就是调用`__patch__`渲染VNode了
+这就又回到`_update`，最后就是调用`__patch__`渲染VNode了。
+
+```typescript
+vm.$el = vm.__patch__(vm.$el, vnode, hydrating, false /* removeOnly */)
+
+function patch (oldVnode, vnode, hydrating, removeOnly) {
+  // ...
+  let isInitialPatch = false
+  const insertedVnodeQueue = []
+
+  if (isUndef(oldVnode)) {
+    // empty mount (likely as component), create new root element
+    isInitialPatch = true
+    createElm(vnode, insertedVnodeQueue)
+  } else {
+    // ...
+  }
+  // ...
+}
+```
+
+这里又回到了`patch`开始的过程，之前分析了负责渲染成DOM的函数`createElm`，需要注意的是，这里只传递了两个参数。所以，对应`parentElm`是`undefined`。接下来我们看看它定义：
+
+```typescript
+function createElm (
+  vnode,
+  insertedVnodeQueue,
+  parentElm,
+  refElm,
+  nested,
+  ownerArray,
+  index
+) {
+  // ...
+  if (createComponent(vnode, insertedVnodeQueue, parentElm, refElm)) {
+    return
+  }
+
+  const data = vnode.data
+  const children = vnode.children
+  const tag = vnode.tag
+  if (isDef(tag)) {
+    // ...
+
+    vnode.elm = vnode.ns
+      ? nodeOps.createElementNS(vnode.ns, tag)
+      : nodeOps.createElement(tag, vnode)
+    setScope(vnode)
+
+    /* istanbul ignore if */
+    if (__WEEX__) {
+      // ...
+    } else {
+      createChildren(vnode, children, insertedVnodeQueue)
+      if (isDef(data)) {
+        invokeCreateHooks(vnode, insertedVnodeQueue)
+      }
+      insert(parentElm, vnode.elm, refElm)
+    }
+
+    // ...
+  } else if (isTrue(vnode.isComment)) {
+    vnode.elm = nodeOps.createComment(vnode.text)
+    insert(parentElm, vnode.elm, refElm)
+  } else {
+    vnode.elm = nodeOps.createTextNode(vnode.text)
+    insert(parentElm, vnode.elm, refElm)
+  }
+}
+```
+
+需要注意的是，这里传入的`vnode`是组件渲染的`vnode`，也就是之前说的`vm._vnode`。如果组件的根节点是普通元素，那么`vm._vnode`也就是普通的`vnode`，这里`createComponent(vnode, insertedVnodeQueue, parentElm,refElm)`的返回值为`false`，接下来就和以前分析的一样了，先创建一个父节点占位符，然后再遍历所有子Vnode递归调用`createElm`，再遍历的过程中，如果遇到子`VNode`是一个组件的`VNode`，重复本节开始的内容，这样通过递归的方式就可以完整的构建整个组件树了。
+
+由于我们这个时候传入的`parentElm`为空，所以是对组件的插入，再`createComponent`中有这么一段逻辑
+
+```typescript
+function createComponent (vnode, insertedVnodeQueue, parentElm, refElm) {
+  let i = vnode.data
+  if (isDef(i)) {
+    // ....
+    if (isDef(i = i.hook) && isDef(i = i.init)) {
+      i(vnode, false /* hydrating */)
+    }
+    // ...
+    if (isDef(vnode.componentInstance)) {
+      initComponent(vnode, insertedVnodeQueue)
+      insert(parentElm, vnode.elm, refElm)
+      if (isTrue(isReactivated)) {
+        reactivateComponent(vnode, insertedVnodeQueue, parentElm, refElm)
+      }
+      return true
+    }
+  }
+}
+```
+
+在完成整个组件的`patch`过程后，最后执行`insert(parentElm, vnode, elm, refElm)`完成组件的DOM插入，如果组件`patch`过程中又创建了子组件，那么DOM的插入顺序是先子后父。
+
+
+
+
+
+### 总结：
+
+这里分析了一个组件的`VNode`是如何创建、初始化、渲染的过程。
+
+其实编写一个组件，实际上就是编写一个JavaScript对象，对象的描述就是各种配置。
