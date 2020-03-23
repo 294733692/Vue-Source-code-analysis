@@ -239,13 +239,13 @@ function flushSchedulerQueue () {
 
 这里有几个地方的逻辑
 
-#### 队列问题
+#### 队列排序
 
 `queue.sort((a, b) => a.id - b.id)`对队列做了从小到大的排序，这么做主要有以下几点确保
 
 - 组件的更新有父到子：因为父组件的创建过程要先于子组件的，所以`Watcher`的创建过程也是先父后子，执行顺序也是先父后子
 - 用户的自定义`watcher`要优先渲染`Watcher`执行：因为用户自定义`watcher`是在渲染`Watcher`之前创建的
-  - 如果一个组件在父组件的`watcher`执行期间被销毁，那么它对应的`watcher`执行都可以被跳过，所以父组件的`watcher`应该先执行。
+- 如果一个组件在父组件的`watcher`执行期间被销毁，那么它对应的`watcher`执行都可以被跳过，所以父组件的`watcher`应该先执行。
 
 #### 队列遍历
 
@@ -273,3 +273,89 @@ export function queueWatcher (watcher: Watcher) {
 ```
 
 这里可以看到，这个时候`flushing`为true，就会执行到else的逻辑，然后就会从后向前找，找到第一个待插入`watcher`的id比当前中`watcher`的**id**大的位置，把`watcher`按照**id**的插入到队列中，因此`queue`的长度发生了变化。
+
+#### 状态恢复
+
+这个过程就是执行`resetchedulerState`函数。它定义在:
+
+> ​	src/core/observer/scheduler.js
+
+```typescript
+const queue: Array<Watcher> = []
+let has: { [key: number]: ?true } = {}
+let circular: { [key: number]: number } = {}
+let waiting = false
+let flushing = false
+let index = 0
+/**
+ * Reset the scheduler's state.
+ */
+function resetSchedulerState () {
+  index = queue.length = activatedChildren.length = 0
+  has = {}
+  if (process.env.NODE_ENV !== 'production') {
+    circular = {}
+  }
+  waiting = flushing = false
+}
+```
+
+这块代码的逻辑非常简单，就是把这些控制流程状态的一些变量恢复成`初始值`，把`watcher`队列清空。
+
+接下来看看`watcher.run()`的逻辑，它的定义
+
+> ​	src/core/obserber/watcher.js
+
+```typescript
+class Watcher {
+  /**
+   * Scheduler job interface.
+   * Will be called by the scheduler.
+   */
+  run () {
+    if (this.active) {
+      this.getAndInvoke(this.cb)
+    }
+  }
+
+  getAndInvoke (cb: Function) {
+    const value = this.get()
+    if (
+      value !== this.value ||
+      // Deep watchers and watchers on Object/Arrays should fire even
+      // when the value is the same, because the value may
+      // have mutated.
+      isObject(value) ||
+      this.deep
+    ) {
+      // set new value
+      const oldValue = this.value
+      this.value = value
+      this.dirty = false
+      if (this.user) {
+        try {
+          cb.call(this.vm, value, oldValue)
+        } catch (e) {
+          handleError(e, this.vm, `callback for watcher "${this.expression}"`)
+        }
+      } else {
+        cb.call(this.vm, value, oldValue)
+      }
+    }
+  }
+}
+```
+
+这里的`watcher.run()`方法实际就是执行了`getAndInvoke`方法，并传入了`watcher`的回调函数，`getAndInvoke`函数，
+
+先是通过`this.get()`得到它当前的值。然后做判断，如果新旧值不相等、新值是对象、`deep`模式下任何一个条件，则执行`watcher`的回调。**注意**回调函数执行的时候会把第一个和第二个参数传入新值`value`和旧值`oldValue`，这就是我么在添加自定义`watcher`的时候能在回调函数的参数中，拿到新旧值的原因。
+
+那么对于渲染`watcher`，它在执行`this.get()`方法求值的时候，会执行`getter`方法
+
+```typescript
+updateComponent = () => {
+  vm._update(vm._render(), hydrating)
+}
+```
+
+所以这就是当我们去修改组件相关的响应式数据的时候，会触发组件重新渲染的原因。接着就会重新执行`patch`的过程，但是和首次渲染有点区别。
