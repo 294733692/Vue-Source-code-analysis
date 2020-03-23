@@ -131,6 +131,7 @@ class Watcher {
 > ​	src/core/observer/scheduler.js
 
 ```typescript
+// 整个Watcher数组
 const queue: Array<Watcher> = []
 // 保存Watcher,用于判断watcher是否存在
 // 用于保证同一个`watcher`只能被添加一次
@@ -194,6 +195,8 @@ function flushSchedulerQueue () {
 
   // do not cache length because more watchers might be pushed
   // as we run existing watchers
+  // 需要注意的是，这里的queue.length长度有可能会在执行watcher.run的时候发生改变
+  // 如果在watcher.run的过程中，又执行了queueWatcher  
   for (index = 0; index < queue.length; index++) {
     watcher = queue[index]
     if (watcher.before) {
@@ -203,6 +206,7 @@ function flushSchedulerQueue () {
     has[id] = null
     watcher.run()
     // in dev build, check and stop circular updates.
+    // 循环更新的时候报错  
     if (process.env.NODE_ENV !== 'production' && has[id] != null) {
       circular[id] = (circular[id] || 0) + 1
       if (circular[id] > MAX_UPDATE_COUNT) {
@@ -240,6 +244,20 @@ function flushSchedulerQueue () {
 这里有几个地方的逻辑
 
 #### 队列排序
+
+```typescript
+// Sort queue before flush.
+// This ensures that:
+// 1. Components are updated from parent to child. (because parent is always
+//    created before the child)
+// 2. A component's user watchers are run before its render watcher (because
+//    user watchers are created before the render watcher)
+// 3. If a component is destroyed during a parent component's watcher run,
+//    its watchers can be skipped.
+  queue.sort((a, b) => a.id - b.id)
+```
+
+
 
 `queue.sort((a, b) => a.id - b.id)`对队列做了从小到大的排序，这么做主要有以下几点确保
 
@@ -314,11 +332,13 @@ class Watcher {
    */
   run () {
     if (this.active) {
+      // 传入回调  
       this.getAndInvoke(this.cb)
     }
   }
 
   getAndInvoke (cb: Function) {
+     // 获取到新值，这里的this.get()执行，就是Dep.target = Watcher
     const value = this.get()
     if (
       value !== this.value ||
@@ -326,12 +346,14 @@ class Watcher {
       // when the value is the same, because the value may
       // have mutated.
       isObject(value) ||
+      // 深度watcher的值  
       this.deep
     ) {
       // set new value
       const oldValue = this.value
       this.value = value
       this.dirty = false
+      // 如果是user watcher  
       if (this.user) {
         try {
           cb.call(this.vm, value, oldValue)
