@@ -151,8 +151,10 @@ export function withMacroTask (fn: Function): Function {
 
 export function nextTick (cb?: Function, ctx?: Object) {
   let _resolve
-  // 将所有添加的任务保存到callbacks数组中
+  // 将所有添加的任务保存到callbacks数组中，push的是匿名函数
   callbacks.push(() => {
+    // 使用try catch保证js代码能够正常执行
+    // js是单线程，如果不适用try catch 执行的话，当某一个cb函数执行失败，就会阻断代码的执行  
     if (cb) {
       try {
         cb.call(ctx)
@@ -160,6 +162,7 @@ export function nextTick (cb?: Function, ctx?: Object) {
         handleError(e, ctx, 'nextTick')
       }
     } else if (_resolve) {
+      // promise的逻辑  
       _resolve(ctx)
     }
   })
