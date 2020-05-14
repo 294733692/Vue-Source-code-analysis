@@ -460,3 +460,290 @@ if (endTagMatch) {
 这个时候当`endTag`为`</div>`的时候，从`stack`尾部找到的标签是`<span>`，就匹配不上，在这个是就会报错警告，匹配后会把栈到`pos`位置弹出，并重`stack`尾部拿到`lastTag`。
 
 最后调用了`end`方法，并传入了一些参数。
+
+
+
+- 文本节点
+
+```typescript
+let text, rest, next
+if (textEnd >= 0) {
+rest = html.slice(textEnd)
+while (
+  !endTag.test(rest) &&
+  !startTagOpen.test(rest) &&
+  !comment.test(rest) &&
+  !conditionalComment.test(rest)
+) {
+  // < in plain text, be forgiving and treat it as text
+  next = rest.indexOf('<', 1)
+  if (next < 0) break
+  textEnd += next
+  rest = html.slice(textEnd)
+}
+	text = html.substring(0, textEnd)
+}
+
+if (textEnd < 0) {
+	text = html
+}
+
+if (text) {
+	advance(text.length)
+}
+
+if (options.chars && text) {
+	options.chars(text, index - text.length, index)
+}
+```
+
+接下来判断`testEnd`是否`大于等于0`，如果满足条件，那么说明当前位置到`textEnd`位置都是本文，并且如果`<`是纯文本中的字符的话，就继续找到真正的文本结束的位置。
+
+在接下来继续判断`textEnd`小于0的情况，如果满足条件，那么说明整个`template`已经被解析完毕了，把剩下的`html`值都赋值给`text`。
+
+如果`text`里面还有值的话，那么移动`text.length`的长度。
+
+最后调用`options.chars`回调函数，并传入相关的参数。
+
+因此，在循环解析整个`template`的过程中，会根据不同的情况，去执行不同的回调函数。接下来看看这些回调函数的作用。
+
+
+
+##### 处理开始标签
+
+对应的代码
+
+```typescript
+start (tag, attrs, unary) {
+  let element = createASTElement(tag, attrs)
+  processElement(element)
+  treeManagement()
+}
+```
+
+从上面我们可以知道，在处理开始标签的时候结尾的时候，调用了`start`函数，并传入了相关的参数，这里我们来看看`start`函数的实现。`start`函数主要就做了3件事：创建AST元素，处理AST元素，AST树管理。下面来看看这几个过程。
+
+- 创建AST元素
+
+```typescript
+// check namespace.
+// inherit parent ns if there is one
+const ns = (currentParent && currentParent.ns) || platformGetTagNamespace(tag)
+
+// handle IE svg bug
+/* istanbul ignore if */
+if (isIE && ns === 'svg') {
+  attrs = guardIESVGBug(attrs)
+}
+// 创建AST元素
+let element: ASTElement = createASTElement(tag, attrs, currentParent)
+if (ns) {
+  element.ns = ns
+}
+
+export function createASTElement (
+  tag: string,
+  attrs: Array<Attr>,
+  parent: ASTElement | void
+): ASTElement {
+  return {
+    type: 1, // AST元素类型
+    tag, // 标签名称
+    attrsList: attrs, // 属性列表
+    attrsMap: makeAttrsMap(attrs), // 属性映射表
+    parent, // 父的AST元素
+    children: [] // 子的AST元素集合
+  }
+}
+```
+
+这里可以看到通过`createASTElement`创建一个AST元素，并添加了nameSpace，可以看到，每一个AST元素就是一个普通的JavaScript对象，其中，`type`表示AST元素类型，`tag`表示标签的名称，`attrList`表示属性列表，`attrsMap`表示属性映射表，`parent`表示父的AST元素，`children`表示子AST元素集合。
+
+
+
+##### 处理AST元素
+
+```typescript
+if (isForbiddenTag(element) && !isServerRendering()) {
+  element.forbidden = true
+  process.env.NODE_ENV !== 'production' && warn(
+    'Templates should only be responsible for mapping the state to the ' +
+    'UI. Avoid placing tags with side-effects in your templates, such as ' +
+    `<${tag}>` + ', as they will not be parsed.'
+  )
+}
+
+// apply pre-transforms
+for (let i = 0; i < preTransforms.length; i++) {
+  element = preTransforms[i](element, options) || element
+}
+
+if (!inVPre) {
+  processPre(element)
+  if (element.pre) {
+    inVPre = true
+  }
+}
+if (platformIsPreTag(element.tag)) {
+  inPre = true
+}
+if (inVPre) {
+  processRawAttrs(element)
+} else if (!element.processed) {
+  // structural directives
+  processFor(element)
+  processIf(element)
+  processOnce(element)
+  // element-scope stuff
+  processElement(element, options)
+}
+```
+
+这里首先调用了`preTransforms`，对于所有模块的`preTransforms`、`transforms`和`postTransforms`都定义在`src/platforms/web/compiler/modules`的目录中，。
+
+接下来判断`element`是否包含各种指令通过`processXXX`做了相应的处理，处理的结果就是扩展AST元素的属性。当前例子涉及到的函数`processFor`、`processIf`
+
+- `processFor`函数
+
+  ```typescript
+  export function processFor (el: ASTElement) {
+    let exp
+    if ((exp = getAndRemoveAttr(el, 'v-for'))) {
+      const res = parseFor(exp)
+      if (res) {
+        extend(el, res)
+      } else if (process.env.NODE_ENV !== 'production') {
+        warn(
+          `Invalid v-for expression: ${exp}`,
+          el.rawAttrsMap['v-for']
+        )
+      }
+    }
+  }
+  
+  export const forAliasRE = /(.*?)\s+(?:in|of)\s+(.*)/
+  export const forIteratorRE = /,([^,\}\]]*)(?:,([^,\}\]]*))?$/
+  const stripParensRE = /^\(|\)$/g
+  export function parseFor (exp: string): ?ForParseResult {
+    const inMatch = exp.match(forAliasRE)
+    if (!inMatch) return
+    const res = {}
+    res.for = inMatch[2].trim()
+    const alias = inMatch[1].trim().replace(stripParensRE, '')
+    const iteratorMatch = alias.match(forIteratorRE)
+    if (iteratorMatch) {
+      res.alias = alias.replace(forIteratorRE, '')
+      res.iterator1 = iteratorMatch[1].trim()
+      if (iteratorMatch[2]) {
+        res.iterator2 = iteratorMatch[2].trim()
+      }
+    } else {
+      res.alias = alias
+    }
+    return res
+  }
+  ```
+
+`processFor`的主要功能就从元素中拿到`v-for`指令的内容，然后分别解析出`for`、`alias`、`iterator1`、`iterator2`等属性的值添加到`AST`的元素上。对于例子`<div v-for="(item, index) in data"></div>`而言，通过`processFor`解析出来的结果就是，`for`就是`data`，`alias`是`item`，`iterator1`是`index`，`iterator2`不存在。
+
+- `processIf`
+
+```typescript
+function processIf (el) {
+  const exp = getAndRemoveAttr(el, 'v-if')
+  if (exp) {
+    el.if = exp
+    addIfCondition(el, {
+      exp: exp,
+      block: el
+    })
+  } else {
+    if (getAndRemoveAttr(el, 'v-else') != null) {
+      el.else = true
+    }
+    const elseif = getAndRemoveAttr(el, 'v-else-if')
+    if (elseif) {
+      el.elseif = elseif
+    }
+  }
+}
+export function addIfCondition (el: ASTElement, condition: ASTIfCondition) {
+  if (!el.ifConditions) {
+    el.ifConditions = []
+  }
+  el.ifConditions.push(condition)
+}
+```
+
+`processIf`函数的主要功能就是从元素中拿到`v-if`指令的内容，如果拿到就给AST元素添加`if`属性和`infConditions`属性，否则尝试去拿`v-else`和`v-else-if`指令的内容，如果拿到则给`AST`元素分别添加`else`和`elseif`属性
+
+##### AST树管理
+
+在处理开始标签的时候，为每一个标签创建一个AST元素，在不断解析模板创建AST元素的时候，我们也要为它们建立父子关系，就像DOM元素的父子关系那样。
+
+AST树管理的相关代码如下：
+
+```typescript
+function checkRootConstraints (el) {
+    if (el.tag === 'slot' || el.tag === 'template') {
+      warnOnce(
+        `Cannot use <${el.tag}> as component root element because it may ` +
+        'contain multiple nodes.',
+        { start: el.start }
+      )
+    }
+    if (el.attrsMap.hasOwnProperty('v-for')) {
+      warnOnce(
+        'Cannot use v-for on stateful component root element because ' +
+        'it renders multiple elements.',
+        el.rawAttrsMap['v-for']
+      )
+    }
+ }
+// tree management
+if (!root) {
+  root = element
+  checkRootConstraints(root)
+} else if (!stack.length) {
+  // allow root elements with v-if, v-else-if and v-else
+  if (root.if && (element.elseif || element.else)) {
+    checkRootConstraints(element)
+    addIfCondition(root, {
+      exp: element.elseif,
+      block: element
+    })
+  } else if (process.env.NODE_ENV !== 'production') {
+    warnOnce(
+      `Component template should contain exactly one root element. ` +
+      `If you are using v-if on multiple elements, ` +
+      `use v-else-if to chain them instead.`
+    )
+  }
+}
+if (currentParent && !element.forbidden) {
+  if (element.elseif || element.else) {
+    processIfConditions(element, currentParent)
+  } else if (element.slotScope) { // scoped slot
+    currentParent.plain = false
+    const name = element.slotTarget || '"default"'
+    ;(currentParent.scopedSlots || (currentParent.scopedSlots = {}))[name] = element
+  } else {
+    currentParent.children.push(element)
+    element.parent = currentParent
+  }
+}
+if (!unary) {
+  currentParent = element
+  stack.push(element)
+} else {
+  closeElement(element)
+}
+```
+
+AST树管理的目标是构建一颗AST树，本质上它要维护`root`更节点和当前父节点`currentParent`。为了保证元素可以正确闭合，这里也利用了`stack`栈的数据结构，和之前解析模板时用到的`stack`类似。
+
+当开始处理开始标签的时候，判断如果有`currentParent`，会把当前AST元素push到`currentParent.children`中，同时把AST元素的`parent`指向`currentParent`。
+
+`stack`和`currentParent`除了在处理开始标签的时候会变化，在处理闭合标签的时候也会变化 ，因此
+
+整个AST树管理要结合闭合标签的处理逻辑看。
