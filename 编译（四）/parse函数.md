@@ -747,3 +747,167 @@ AST树管理的目标是构建一颗AST树，本质上它要维护`root`更节�
 `stack`和`currentParent`除了在处理开始标签的时候会变化，在处理闭合标签的时候也会变化 ，因此
 
 整个AST树管理要结合闭合标签的处理逻辑看。
+
+
+
+##### 处理闭合标签
+
+对应伪代码
+
+```typescript
+end () {
+  treeManagement()
+  closeElement()
+}
+```
+
+当解析到闭合标签的时候，最后会执行`end`回调函数
+
+```typescript
+// remove trailing whitespace
+const element = stack[stack.length - 1]
+const lastNode = element.children[element.children.length - 1]
+if (lastNode && lastNode.type === 3 && lastNode.text === ' ' && !inPre) {
+  element.children.pop()
+}
+// pop stack
+stack.length -= 1
+currentParent = stack[stack.length - 1]
+closeElement(element)
+```
+
+首先处理了尾部空格的情况，然后把`stack`的元素弹出一个栈，并把`stack`最后一个元素赋值给`currentParent`，这样就保证了当遇见闭合标签的时候，可以正确的更新`stack`的长度以及`currentParent`的值，这样就维护了整个AST树。
+
+最后执行`closeElement`函数
+
+```typescript
+function closeElement (element) {
+  // check pre state
+  if (element.pre) {
+    inVPre = false
+  }
+  if (platformIsPreTag(element.tag)) {
+    inPre = false
+  }
+  // apply post-transforms
+  for (let i = 0; i < postTransforms.length; i++) {
+    postTransforms[i](element, options)
+  }
+}
+```
+
+这个函数这里主要就是更新`pre`、`inPre`的状态，然后执行`postTransforms`函数。
+
+
+
+##### 处理文本内容
+
+对应伪代码：
+
+```typescript
+chars (text: string) {
+  handleText()
+  createChildrenASTOfText()
+}
+```
+
+除了处理开始标签和闭合标签，还会在解析模板的过程中处理一些文本内容
+
+```typescript
+const children = currentParent.children
+text = inPre || text.trim()
+  ? isTextTag(currentParent) ? text : decodeHTMLCached(text)
+  // only preserve whitespace if its not right after a starting tag
+  : preserveWhitespace && children.length ? ' ' : ''
+if (text) {
+  let res
+  if (!inVPre && text !== ' ' && (res = parseText(text, delimiters))) {
+    children.push({
+      type: 2,
+      expression: res.expression,
+      tokens: res.tokens,
+      text
+    })
+  } else if (text !== ' ' || !children.length || children[children.length - 1].text !== ' ') {
+    children.push({
+      type: 3,
+      text
+    })
+  }
+}
+```
+
+文本构造的AST元素一共有两种，一种是有表达式的，`type`为2，一种是存文本的，`type`为3，在当前这个例子中，文本就是`:`，是一个表达式，通过执行`parseText(text, delimiters)`对文本解析，这个函数定义在：
+
+> ​	src/compiler/parser/test-parsre.js
+
+```typescript
+const defaultTagRE = /\{\{((?:.|\n)+?)\}\}/g
+const regexEscapeRE = /[-.*+?^${}()|[\]\/\\]/g
+
+const buildRegex = cached(delimiters => {
+  const open = delimiters[0].replace(regexEscapeRE, '\\$&')
+  const close = delimiters[1].replace(regexEscapeRE, '\\$&')
+  return new RegExp(open + '((?:.|\\n)+?)' + close, 'g')
+})
+
+export function parseText (
+  text: string,
+  delimiters?: [string, string]
+): TextParseResult | void {
+  const tagRE = delimiters ? buildRegex(delimiters) : defaultTagRE
+  if (!tagRE.test(text)) {
+    return
+  }
+  const tokens = []
+  const rawTokens = []
+  let lastIndex = tagRE.lastIndex = 0
+  let match, index, tokenValue
+  while ((match = tagRE.exec(text))) {
+    index = match.index
+    // push text token
+    if (index > lastIndex) {
+      rawTokens.push(tokenValue = text.slice(lastIndex, index))
+      tokens.push(JSON.stringify(tokenValue))
+    }
+    // tag token
+    const exp = parseFilters(match[1].trim())
+    tokens.push(`_s(${exp})`)
+    rawTokens.push({ '@binding': exp })
+    lastIndex = index + match[0].length
+  }
+  if (lastIndex < text.length) {
+    rawTokens.push(tokenValue = text.slice(lastIndex))
+    tokens.push(JSON.stringify(tokenValue))
+  }
+  return {
+    expression: tokens.join('+'),
+    tokens: rawTokens
+  }
+}
+```
+
+`parseText`首先根据分隔符（默认是`{{}}`）构造了文本匹配的正则表达式，然后在循环匹配文本，遇到普通文本就push到`rowTokens`和`tokens`中，如果是表达式就转换成`_s(${exp})`push到`tokens`中，以及转换成`{@binding:exp}`push到`rowTokens`中。
+
+对于我们当前这个例子`:`，`tokens`就是`[_s(item),'":"',_s(index)]`；`rowTokens` 就是`[{'@binding':'item'},':',{'@binding':'index'}]`。那么返回的对象如下：
+
+```js
+return {
+    expression: '_s(item)+":"+_s(index)',
+    tokens:[{'@binding':'item'},{$'@binding':'index'}]
+}
+```
+
+流程图
+
+![img](https://ustbhuangyi.github.io/vue-analysis/assets/parse.png)
+
+
+
+总的来说，`parse`的目标就是把`template`模板字符串转化为AST树，这是一种用javascript对象的形式来描述整个模板。那么整个`parse`的过程就是利用正则表达式顺序解析模板。当解析到开始标签、闭合标签、文本的时候都会分别执行对应的回调函数，来达到构造AST树的目的。
+
+AST元素节点总共有三总类型，`type`为1表示普通元素，为2表示为表达式，3表示为纯文本，
+
+
+
+那么当AST树构造完毕，那么接下来就是`optimize`优化AST树了。
