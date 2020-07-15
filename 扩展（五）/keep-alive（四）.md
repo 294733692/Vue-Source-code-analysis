@@ -308,3 +308,243 @@ function pruneCacheEntry (
 - 第三步：根据组件ID和`tag`生成缓存`key`，并在缓存对象中查找是否已缓存过该组件实例。如果存在，直接取出缓存值并更新该`key`在`this.keys`中的位置（更新`key`的位置是实现`LRU`置换策略的关键），否则执行第四步；
 - 在`this.cache`对象中存储该组件实例并保存`key`值，之后检查缓存的实例数量是否超过`max`设置值，超过则根据`LRU`置换策略删除最近最久未使用过的实例（即下标为0的那个key）；
 - 第五步：最后并且很重要，将该组件实例的`keepAlive`属性值设置为true
+
+
+
+#### 组件渲染
+
+上面了解了`<keep-alive>`的组件的实现，但并不知道它 包裹的子组件渲染和普通组件有什么不一样的地方，这里我们关注两个方面，首次渲染和缓存渲染。
+
+举一个例子：
+
+```js
+let A = {
+  template: '<div class="a">' +
+  '<p>A Comp</p>' +
+  '</div>',
+  name: 'A'
+}
+
+let B = {
+  template: '<div class="b">' +
+  '<p>B Comp</p>' +
+  '</div>',
+  name: 'B'
+}
+
+let vm = new Vue({
+  el: '#app',
+  template: '<div>' +
+  '<keep-alive>' +
+  '<component :is="currentComp">' +
+  '</component>' +
+  '</keep-alive>' +
+  '<button @click="change">switch</button>' +
+  '</div>',
+  data: {
+    currentComp: 'A'
+  },
+  methods: {
+    change() {
+      this.currentComp = this.currentComp === 'A' ? 'B' : 'A'
+    }
+  },
+  components: {
+    A,
+    B
+  }
+})
+```
+
+
+
+#### 首次渲染
+
+我们知道Vue的渲染最后都会到`patch`过程，而组件的`patch`过程会执行`createComponent`方法，它定义在
+
+> src/core/vdom/patch.js
+
+```typescript
+function createComponent (vnode, insertedVnodeQueue, parentElm, refElm) {
+  let i = vnode.data
+  if (isDef(i)) {
+    const isReactivated = isDef(vnode.componentInstance) && i.keepAlive
+    if (isDef(i = i.hook) && isDef(i = i.init)) {
+      i(vnode, false /* hydrating */)
+    }
+    // after calling the init hook, if the vnode is a child component
+    // it should've created a child instance and mounted it. the child
+    // component also has set the placeholder vnode's elm.
+    // in that case we can just return the element and be done.
+    if (isDef(vnode.componentInstance)) {
+      initComponent(vnode, insertedVnodeQueue)
+      insert(parentElm, vnode.elm, refElm)
+      if (isTrue(isReactivated)) {
+        reactivateComponent(vnode, insertedVnodeQueue, parentElm, refElm)
+      }
+      return true
+    }
+  }
+}
+```
+
+`createComponent`定义了`isReactiveted`的变量，它是根据`vnode.componentInstance`以及`vnode.data.keepAlive`的判断，第一次渲染的时候，`vnode.componentInstance`为`undefined`，`vnode.data.keepAlive`为`true`，因为它的父组件`<keep-alive>`的`render`函数会先执行，那么该`vnode`缓存到内存中，并且设置`vnode.data.keepAlive`为`true`，因此`isReactiveted`为`false`，那么走正常的`init`的钩子函数执行组件的`mount`，当`vnode`已经执行完`patch`后，执行`initComponent`函数。
+
+```typescript
+function initComponent (vnode, insertedVnodeQueue) {
+  if (isDef(vnode.data.pendingInsert)) {
+    insertedVnodeQueue.push.apply(insertedVnodeQueue, vnode.data.pendingInsert)
+    vnode.data.pendingInsert = null
+  }
+  vnode.elm = vnode.componentInstance.$el
+  if (isPatchable(vnode)) {
+    invokeCreateHooks(vnode, insertedVnodeQueue)
+    setScope(vnode)
+  } else {
+    // empty component root.
+    // skip all element-related modules except for ref (#3455)
+    registerRef(vnode)
+    // make sure to invoke the insert hook
+    insertedVnodeQueue.push(vnode)
+  }
+}
+```
+
+这里会有`vnode.elm`缓存`vnode`创建生成的DOM节点。所以对于首次渲染而言，除了在`<keep-alive>`中建立缓存，和普通组件渲染没什么区别。
+
+所以对于我们当前这个例子，初始化渲染`A`组件以及第一次点击`switch`渲染组件`B`组件，都是首次渲染。
+
+
+
+#### 缓存渲染
+
+当我们从`B`组件再次点击`switch`切换到`A`组件，就会命中缓存渲染，它会对于新旧`vnode`节点，甚至对白他们的子节点去做更新逻辑，但是对于组件`vnode`而言，是没有`children`的，那么对于`<keep-alive>`组件而言，如果更新它包裹的内容呢？
+
+原来`pathcVnode`在做各种`diff`之前，会先执行`prepatch`的钩子函数，它的定义在
+
+> ​	src/core/vdom/create-component
+
+```typescript
+const componentVNodeHooks = {
+  prepatch (oldVnode: MountedComponentVNode, vnode: MountedComponentVNode) {
+    const options = vnode.componentOptions
+    const child = vnode.componentInstance = oldVnode.componentInstance
+    updateChildComponent(
+      child,
+      options.propsData, // updated props
+      options.listeners, // updated listeners
+      vnode, // new parent vnode
+      options.children // new children
+    )
+  },
+  // ...
+}
+```
+
+`prepatch`核心逻辑就是执行`updateChildComponent`方法，它的定义在
+
+> src/core/instance/lifecycle.js
+
+```typescript
+export function updateChildComponent (
+  vm: Component,
+  propsData: ?Object,
+  listeners: ?Object,
+  parentVnode: MountedComponentVNode,
+  renderChildren: ?Array<VNode>
+) {
+  const hasChildren = !!(
+    renderChildren ||          
+    vm.$options._renderChildren ||
+    parentVnode.data.scopedSlots || 
+    vm.$scopedSlots !== emptyObject 
+  )
+
+  // ...
+  if (hasChildren) {
+    vm.$slots = resolveSlots(renderChildren, parentVnode.context)
+    vm.$forceUpdate()
+  }
+}
+```
+
+`updateChildComponent`方法主要失去更新组件实例的一些属性，这里我们重点关注`slot`部分，由于`<keep-alive>`组件本质上支持了`slot`，所以它执行`prepatch`的时候，需要对自己的`children`，也就是这些`slots`做重新解析，并触发`<keep-alive>`组件实例`$forceUpdate()`逻辑，也就是重新执行`<keep-alive>`的`render`方法，这个时候如果它包裹的第一个组件`vnode`命中缓存，则直接返回缓存中的`vnode.componentInstance`，在我们当前这个例子中就是缓存的`A`组件，接着又会执行`patch`过程，再次执行到`createComponent`方法，这个时候我们再来看看`createComponent`方法
+
+```typescript
+function createComponent (vnode, insertedVnodeQueue, parentElm, refElm) {
+  let i = vnode.data
+  if (isDef(i)) {
+    const isReactivated = isDef(vnode.componentInstance) && i.keepAlive
+    if (isDef(i = i.hook) && isDef(i = i.init)) {
+      i(vnode, false /* hydrating */)
+    }
+    // after calling the init hook, if the vnode is a child component
+    // it should've created a child instance and mounted it. the child
+    // component also has set the placeholder vnode's elm.
+    // in that case we can just return the element and be done.
+    if (isDef(vnode.componentInstance)) {
+      initComponent(vnode, insertedVnodeQueue)
+      insert(parentElm, vnode.elm, refElm)
+      if (isTrue(isReactivated)) {
+        reactivateComponent(vnode, insertedVnodeQueue, parentElm, refElm)
+      }
+      return true
+    }
+  }
+}
+```
+
+这个时候的`isReacttived`为true，并且在执行`init`钩子函数的时候不会再执行组件的`mount`过程，相关的逻辑在
+
+> `src/core/vdom/create-component.js
+
+```typescript
+const componentVNodeHooks = {
+  init (vnode: VNodeWithData, hydrating: boolean): ?boolean {
+    if (
+      vnode.componentInstance &&
+      !vnode.componentInstance._isDestroyed &&
+      vnode.data.keepAlive
+    ) {
+      // kept-alive components, treat as a patch
+      const mountedNode: any = vnode // work around flow
+      componentVNodeHooks.prepatch(mountedNode, mountedNode)
+    } else {
+      const child = vnode.componentInstance = createComponentInstanceForVnode(
+        vnode,
+        activeInstance
+      )
+      child.$mount(hydrating ? vnode.elm : undefined, hydrating)
+    }
+  },
+  // ...
+}
+```
+
+这也就是被`<keep-alive>`包裹的组件在有缓存的时候就不会再执行组件的`created`、`mounted`等钩子函数的原因了，回到`createComponent`方法，在`isReactivated`为`true`的情况下会执行`reactivateComponent`方法：
+
+```typescript
+function reactivateComponent (vnode, insertedVnodeQueue, parentElm, refElm) {
+  let i
+  // hack for #4339: a reactivated component with inner transition
+  // does not trigger because the inner node's created hooks are not called
+  // again. It's not ideal to involve module-specific logic in here but
+  // there doesn't seem to be a better way to do it.
+  let innerNode = vnode
+  while (innerNode.componentInstance) {
+    innerNode = innerNode.componentInstance._vnode
+    if (isDef(i = innerNode.data) && isDef(i = i.transition)) {
+      for (i = 0; i < cbs.activate.length; ++i) {
+        cbs.activate[i](emptyNode, innerNode)
+      }
+      insertedVnodeQueue.push(innerNode)
+      break
+    }
+  }
+  // unlike a newly created component,
+  // a reactivated keep-alive component doesn't insert itself
+  insert(parentElm, vnode.elm, refElm)
+}
+```
+
+前面部分的逻辑是解决对`reactived`组件`transition`动画不出发的问题，这里可以暂时可以忽略，最后通过执行`insert(parentElm, vnode.elm, refElm)`就把缓存的DOM对象直接插入到目标元素中，这样就完成了在数据更新的情况下的渲染过程。
