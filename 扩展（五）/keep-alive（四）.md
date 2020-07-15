@@ -1,4 +1,4 @@
-### keep-alive
+### eep-alive
 
 - Props：
 
@@ -548,3 +548,143 @@ function reactivateComponent (vnode, insertedVnodeQueue, parentElm, refElm) {
 ```
 
 前面部分的逻辑是解决对`reactived`组件`transition`动画不出发的问题，这里可以暂时可以忽略，最后通过执行`insert(parentElm, vnode.elm, refElm)`就把缓存的DOM对象直接插入到目标元素中，这样就完成了在数据更新的情况下的渲染过程。
+
+
+
+#### 生命周期
+
+前面说到，组件一旦被`<keep-alive>`缓存，那么再次渲染的时候就不会执行`created`、`mounted`等钩子函数，但是我们很多业务场景都是在希望在我们被缓存的组件再次被渲染的时候做一些事情，这里vue提供了`activated`钩子函数，它的执行时机是`<keep-alive>`包裹的组价渲染的时候，那么接下来我么看看它的实现原理。
+
+在渲染的最后一步，会执行`invokeInsertHook(vnode, insertedVnodeQueue, isInitialPatch)`函数执行`vnode`的`insert`钩子函数，它定义在
+
+> src/core/vdom/create-component.js
+
+```typescript
+const componentVNodeHooks = {
+  insert (vnode: MountedComponentVNode) {
+    const { context, componentInstance } = vnode
+    if (!componentInstance._isMounted) {
+      componentInstance._isMounted = true
+      callHook(componentInstance, 'mounted')
+    }
+    if (vnode.data.keepAlive) {
+      if (context._isMounted) {
+        // vue-router#1212
+        // During updates, a kept-alive component's child components may
+        // change, so directly walking the tree here may call activated hooks
+        // on incorrect children. Instead we push them into a queue which will
+        // be processed after the whole patch process ended.
+        queueActivatedComponent(componentInstance)
+      } else {
+        activateChildComponent(componentInstance, true /* direct */)
+      }
+    }
+  },
+  // ...
+}
+```
+
+这里判断如果是被`<keep-alive>`包裹的组价已经`mounted`，那么则执行`queueActivatedComponent(componentInstance)`，否则执行`activateChildComponent(componentInstance,true)`,首先我们先分析非`mounted`的情况，`activateChildComponent`的定义
+
+> src/core/instance/lifecycle.js
+
+```typescript
+export function activateChildComponent (vm: Component, direct?: boolean) {
+  if (direct) {
+    vm._directInactive = false
+    if (isInInactiveTree(vm)) {
+      return
+    }
+  } else if (vm._directInactive) {
+    return
+  }
+  if (vm._inactive || vm._inactive === null) {
+    vm._inactive = false
+    for (let i = 0; i < vm.$children.length; i++) {
+      activateChildComponent(vm.$children[i])
+    }
+    callHook(vm, 'activated')
+  }
+}
+```
+
+从这里可以看到，这里就是执行组件的`activated`钩子函数，并且递归去执行它的所有子组件的`activated`钩子函数。
+
+那么再看`queueActivatedComponent`的逻辑，
+
+> src/core/observer/scheduler.js
+
+```typescript
+export function queueActivatedComponent (vm: Component) {
+  vm._inactive = false
+  activatedChildren.push(vm)
+}
+```
+
+这里的逻辑挺简单的，把当前`vm`实例添加到`activaedChildren`数组中，等所有的渲染完毕，在`nextTick`后会执行`flushSchedulerQueue`，这个时候就会执行
+
+```typescript
+function flushSchedulerQueue () {
+  // ...
+  const activatedQueue = activatedChildren.slice()
+  callActivatedHooks(activatedQueue)
+  // ...
+} 
+
+function callActivatedHooks (queue) {
+  for (let i = 0; i < queue.length; i++) {
+    queue[i]._inactive = true
+    activateChildComponent(queue[i], true)  }
+}
+```
+
+也就是遍历所有的`activatedChildren`，执行`activateChildrenComponent`方法，通过队列调的方式就是把整个`activated`的时机延后了。
+
+有了`activated`钩子函数，也就有对应的`deactivated`钩子函数，它是发生在`vnode`的`destory`钩子函数，定义在
+
+> src/core/vdom/create-component.js
+
+```typescript
+const componentVNodeHooks = {
+  destroy (vnode: MountedComponentVNode) {
+    const { componentInstance } = vnode
+    if (!componentInstance._isDestroyed) {
+      if (!vnode.data.keepAlive) {
+        componentInstance.$destroy()
+      } else {
+        deactivateChildComponent(componentInstance, true /* direct */)
+      }
+    }
+  }
+}
+```
+
+对于`<keep-alive>`包裹的组件而言，它会执行`deactivateChildComponent(componentInstance, true)`方法，该方法定义在
+
+> src/core/instance/lifecycle.js
+
+```typescript
+export function deactivateChildComponent (vm: Component, direct?: boolean) {
+  if (direct) {
+    vm._directInactive = true
+    if (isInInactiveTree(vm)) {
+      return
+    }
+  }
+  if (!vm._inactive) {
+    vm._inactive = true
+    for (let i = 0; i < vm.$children.length; i++) {
+      deactivateChildComponent(vm.$children[i])
+    }
+    callHook(vm, 'deactivated')
+  }
+}
+```
+
+和`activateChildComponent`方法类似，就是执行组件的`deacitvated`钩子函数，并且递归去执行它的所有子组件的`deactivated`钩子函数
+
+
+
+### 总结
+
+那么至此，`<keep-alive>` 的实现原理就介绍完了，通过分析我们知道了 `<keep-alive>` 组件是一个抽象组件，它的实现通过自定义 `render` 函数并且利用了插槽，并且知道了 `<keep-alive>` 缓存 `vnode`，了解组件包裹的子元素——也就是插槽是如何做更新的。且在 `patch` 过程中对于已缓存的组件不会执行 `mounted`，所以不会有一般的组件的生命周期函数但是又提供了 `activated` 和 `deactivated` 钩子函数。另外我们还知道了 `<keep-alive>` 的 `props` 除了 `include` 和 `exclude` 还有文档中没有提到的 `max`，它能控制我们缓存的个数。
