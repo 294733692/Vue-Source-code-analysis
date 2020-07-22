@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="LeetcodeEditor">
+    <option name="projectConfig">
+      <map>
+        <entry key="$USER_HOME$/AppData/Local/Temp/leetcode/editor/cn/[229]求众数 II.go">
+          <value>
+            <LeetcodeEditor>
+              <option name="path" value="$USER_HOME$/AppData/Local/Temp/leetcode/editor/cn/[229]求众数 II.go" />
+              <option name="questionId" value="229" />
+            </LeetcodeEditor>
+          </value>
+        </entry>
+        <entry key="$USER_HOME$/AppData/Local/Temp/leetcode/editor/cn/[316]去除重复字母.js">
+          <value>
+            <LeetcodeEditor>
+              <option name="path" value="$USER_HOME$/AppData/Local/Temp/leetcode/editor/cn/[316]去除重复字母.js" />
+              <option name="questionId" value="316" />
+            </LeetcodeEditor>
+          </value>
+        </entry>
+        <entry key="$USER_HOME$/AppData/Local/Temp/leetcode/editor/cn/[381]O(1) 时间插入、删除和获取随机元素 - 允许重复.js">
+          <value>
+            <LeetcodeEditor>
+              <option name="path" value="$USER_HOME$/AppData/Local/Temp/leetcode/editor/cn/[381]O(1) 时间插入、删除和获取随机元素 - 允许重复.js" />
+              <option name="questionId" value="381" />
+            </LeetcodeEditor>
+          </value>
+        </entry>
+        <entry key="$USER_HOME$/AppData/Local/Temp/leetcode/editor/cn/[44]通配符匹配.js">
+          <value>
+            <LeetcodeEditor>
+              <option name="path" value="$USER_HOME$/AppData/Local/Temp/leetcode/editor/cn/[44]通配符匹配.js" />
+              <option name="questionId" value="44" />
+            </LeetcodeEditor>
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+</project>
